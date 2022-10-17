@@ -317,7 +317,11 @@ DrawioEditor.prototype.configureCallback = function () {
 		'config': {
 			// https://www.diagrams.net/doc/faq/configure-diagram-editor#:~:text=defaultGridEnabled%3A%20Defines-,whether,-the%20grid%20is
 			// disable word wrapping to prevent foreignObject on svg export
-			'simpleLabels': true
+			'simpleLabels': true,
+			'defaultPageVisible': false,
+			'autosaveDelay': 1000 * 60 * 5, // save every 5 mins
+			"defaultVertexStyle": {"fontFamily": "Cascadia Code"},
+			"defaultEdgeStyle": {"fontFamily": "Cascadia Code"},
 		}
 	});
 }
