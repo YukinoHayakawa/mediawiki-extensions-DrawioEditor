@@ -227,16 +227,17 @@ DrawioEditor.prototype.uploadToWiki = function(blob) {
 		})
 		.fail( function(retStatus, data) {
 			that.hideSpinner();
-			if( retStatus == "exists" ){
+			// file exists
+			// if (data.upload?.warnings?.exists !== undefined) {
 				that.updateImage(data.upload.imageinfo);
-			} else {
+			// } else {
 				if ( data.error ) {
 					that.showDialog('Save failed',
 					'Upload to wiki failed!' +
 				'<br>Error: ' + data.error.info +
 				'<br>Check javascript console for details.');
 				}
-			}
+			// }
 		});
 
 }
