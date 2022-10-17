@@ -54,7 +54,7 @@ function DrawioEditor( id, filename, type, interactive, updateHeight, updateWidt
 
 	var localAttr = this.baseUrl !== 'https://embed.diagrams.net' ? "&local=1" : "";
 	this.iframe = $('<iframe>', {
-		src: this.baseUrl + '/?embed=1&proto=json&spin=1&analytics=0&picker=0&lang=' + this.language + localAttr,
+		src: this.baseUrl + '/?embed=1&math=1&configure=1&proto=json&spin=1&analytics=0&picker=0&lang=' + this.language + localAttr,
 		id: 'drawio-iframe-' + id,
 		class: 'DrawioEditorIframe'
 	});
@@ -310,6 +310,17 @@ DrawioEditor.prototype.initCallback = function () {
 	this.loadImage();
 }
 
+DrawioEditor.prototype.configureCallback = function () {
+	// disable foreignObjects
+	this.sendMsgToIframe({
+		'action': 'configure',
+		'config': {
+			// https://www.diagrams.net/doc/faq/configure-diagram-editor#:~:text=defaultGridEnabled%3A%20Defines-,whether,-the%20grid%20is
+			// disable word wrapping to prevent foreignObject on svg export
+			'simpleLabels': true
+		}
+	});
+}
 
 var editor;
 
@@ -351,6 +362,10 @@ function drawioHandleMessage(e) {
 		case 'exit':
 			editor.exitCallback();
 		// editor is null after this callback
+			break;
+
+		case 'configure':
+			editor.configureCallback();
 			break;
 
 		default:
