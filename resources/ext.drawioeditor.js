@@ -62,6 +62,11 @@ function DrawioEditor( id, filename, type, interactive, updateHeight, updateWidt
 
 	this.iframeWindow = this.iframe.prop('contentWindow');
 
+	// hide wiki navigation
+	$("#mw-navigation").hide();
+	// disable page scrolling
+	$("body").css("overflow", "hidden");
+
 	this.show();
 }
 
@@ -129,7 +134,7 @@ DrawioEditor.prototype.showDialog = function(title, message) {
 }
 
 DrawioEditor.prototype.showSpinner = function() {
-	this.iframeBox.resizable("disable");
+	// this.iframeBox.resizable("disable");
 	this.showOverlay();
 	this.sendMsgToIframe({
 		'action': 'spinner',
@@ -138,7 +143,7 @@ DrawioEditor.prototype.showSpinner = function() {
 }
 
 DrawioEditor.prototype.hideSpinner = function() {
-	this.iframeBox.resizable("enable");
+	// this.iframeBox.resizable("enable");
 	this.hideOverlay();
 	this.sendMsgToIframe({
 		'action': 'spinner',
@@ -269,6 +274,10 @@ DrawioEditor.prototype.exit = function() {
 	editor = null;
 	$('#warningmsg').hide();
 	this.destroy();
+	// show wiki navigation
+	$("#mw-navigation").show();
+	// disable page scrolling
+	$("body").css("overflow", "auto");
 }
 
 DrawioEditor.prototype.saveCallback = function() {
