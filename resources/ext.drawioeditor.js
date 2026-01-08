@@ -1,16 +1,16 @@
-function DrawioEditor( id, filename, type, updateHeight, updateWidth,
+function DrawioEditor( id, filename, editMode, type, updateHeight, updateWidth,
 	updateMaxWidth, baseUrl, latestIsApproved, imageURL ) {
 	const that = this;
 
 	this.id = id;
 	this.filename = filename;
+	this.editMode = editMode;
 	this.imgType = type;
 	this.updateHeight = updateHeight;
 	this.updateWidth = updateWidth;
 	this.updateMaxWidth = updateMaxWidth;
 	this.baseUrl = baseUrl;
 	this.latestIsApproved = latestIsApproved;
-	this.scale = mw.config.get( 'drawioscale' ) || 1;
 
 	// Could be 'en', 'fr', 'de-formal', 'zh-hant', ...
 	const currentUserLanguage = mw.user.options.get( 'language', 'en' ).split( '-' );
@@ -47,15 +47,37 @@ function DrawioEditor( id, filename, type, updateHeight, updateWidth,
 	this.iframeOverlay = $( '#drawio-iframe-overlay-' + id );
 	this.iframeOverlay.hide();
 
+	const customShapeLibraries = require( './customShapeLibraries.json' );
+
+	const params = new URLSearchParams( {
+		embed: '1',
+		proto: 'json',
+		spin: '1',
+		analytics: '0',
+		picker: '0',
+		lang: this.language,
+		ui: 'min',
+		libraries: '1',
+		configure: '1',
+		splash: '0'
+	} );
+
+	// Append clibs manually so semicolons remain unencoded
+	const clibsParam = `&clibs=${ customShapeLibraries.customShapeLibraries }`;
+	const iframeUrl = `${ this.baseUrl }/?${ params.toString() }${ clibsParam }`;
+
 	this.iframe = $( '<iframe>' )
 		.attr( {
-			src: this.baseUrl + '/?embed=1&proto=json&spin=1&analytics=0&picker=0&lang=' + this.language,
-			id: 'drawio-iframe-' + id
+			src: iframeUrl,
+			id: `drawio-iframe-${ id }`
 		} )
 		.addClass( 'DrawioEditorIframe' );
 	this.iframe.appendTo( this.iframeBox );
+	this.fullscreenDialog = new FullscreenDialog( this.iframe );
 
-	this.iframeWindow = this.iframe.prop( 'contentWindow' );
+	this.iframe.on( 'load', () => {
+		this.iframeWindow = this.iframe.prop( 'contentWindow' );
+	} );
 
 	this.show();
 }
@@ -66,8 +88,16 @@ DrawioEditor.prototype.destroy = function () {
 
 DrawioEditor.prototype.show = function () {
 	this.imageBox.hide();
-	this.iframeBox.height( Math.max( this.imageBox.height() + 100, 800 ) );
-	this.iframeBox.show();
+
+	if ( this.editMode === 'inline' ) {
+		this.iframeBox.height( Math.max( this.imageBox.height() + 100, 800 ) );
+		this.iframeBox.show();
+	} else if ( this.editMode === 'fullscreen' ) {
+		this.fullscreenDialog.show( this.iframe );
+	} else {
+		throw new Error( 'unknown edit mode' );
+	}
+
 	$( '#approved-displaywarning' ).remove();
 	if ( !this.latestIsApproved ) {
 		const msg = mw.message( 'drawioeditor-approved-editwarning' ).escaped();
@@ -78,6 +108,7 @@ DrawioEditor.prototype.show = function () {
 DrawioEditor.prototype.hide = function () {
 	this.iframeBox.hide();
 	this.imageBox.show();
+	this.fullscreenDialog.close();
 };
 
 DrawioEditor.prototype.showOverlay = function () {
@@ -92,18 +123,14 @@ DrawioEditor.prototype.updateImage = function ( imageinfo ) {
 	this.imageURL = imageinfo.url + '?ts=' + imageinfo.timestamp;
 	this.image.attr( 'src', this.imageURL );
 	this.imageHref.attr( 'href', imageinfo.descriptionurl );
-
-	const displayWidth = imageinfo.width / this.scale;
-	const displayHeight = imageinfo.height / this.scale;
-
 	if ( this.updateHeight ) {
-		this.image.css( 'height', displayWidth );
+		this.image.css( 'height', imageinfo.height );
 	}
 	if ( this.updateWidth ) {
-		this.image.css( 'width', displayHeight );
+		this.image.css( 'width', imageinfo.width );
 	}
 	if ( this.updateMaxWidth ) {
-		this.image.css( 'max-width', displayHeight );
+		this.image.css( 'max-width', imageinfo.width );
 	}
 	if ( this.placeholder ) {
 		this.placeholder.hide();
@@ -197,45 +224,64 @@ DrawioEditor.prototype.loadImage = function () {
 	this.downloadFromWiki();
 };
 
-DrawioEditor.prototype.uploadToWiki = function ( blob ) {
-	const that = this;
+/**
+ * Upload the Drawio diagram to the wiki using the custom API module.
+ *
+ * @param {Blob} blob - The diagram file blob to upload.
+ */
+DrawioEditor.prototype.uploadToWiki = async function ( blob ) {
+	const formData = new FormData();
+	formData.append( 'action', 'drawioeditor-save-diagram' );
+	formData.append( 'token', mw.user.tokens.get( 'csrfToken' ) );
+	formData.append( 'format', 'json' );
+	formData.append( 'file', blob, this.filename );
 
-	const api = new mw.Api();
-	api.upload( blob, { filename: this.filename, ignorewarnings: true, format: 'json' } )
-		.done( ( data ) => {
-			if ( !data.upload ) {
-				if ( data.error ) {
-					that.showDialog( 'Save failed',
-						'The wiki returned the follwing error when uploading:<br>' +
-						data.error.info
-					);
-				} else {
-					that.showDialog( 'Save failed',
-						'The upload to the wiki failed.' +
-						'<br>Check javascript console for details.'
-					);
-				}
-				console.log( 'upload to wiki failed' ); // eslint-disable-line no-console
-				console.log( data ); // eslint-disable-line no-console
-			} else {
-				that.updateImage( data.upload.imageinfo );
-				that.hideSpinner();
-			}
-		} )
-		.fail( ( retStatus, data ) => {
-			that.hideSpinner();
-			if ( retStatus === 'exists' ) {
-				that.updateImage( data.upload.imageinfo );
-			} else {
-				if ( data.error ) {
-					that.showDialog( 'Save failed',
-						'Upload to wiki failed!' +
-				'<br>Error: ' + data.error.info +
-				'<br>Check javascript console for details.' );
-				}
-			}
+	try {
+		// Perform the upload request
+		const response = await fetch( mw.util.wikiScript( 'api' ), {
+			method: 'POST',
+			body: formData,
+			credentials: 'same-origin'
 		} );
 
+		if ( !response.ok ) {
+			throw new Error( `HTTP ${ response.status } - ${ response.statusText }` );
+		}
+
+		const data = await response.json();
+
+		if ( data.upload ) {
+			// Upload succeeded, update image
+			this.updateImage( data.upload.imageinfo );
+			this.hideSpinner();
+			return;
+		}
+
+		this.hideSpinner();
+
+		if ( data.error ) {
+			// Known API error
+			this.showDialog(
+				'Save failed',
+				`Upload error: ${ data.error.info }`
+			);
+		} else {
+			// Unexpected or malformed API response
+			this.showDialog(
+				'Save failed',
+				'Unexpected response. See console for details.'
+			);
+			console.error( '[DrawioEditor] Unexpected upload response:', data ); // eslint-disable-line no-console
+		}
+	} catch ( error ) {
+		// Network or fatal error
+		this.hideSpinner();
+		this.showDialog(
+			'Save failed',
+			`Upload failed: ${ error.message }. See console for details.`
+		);
+		console.error( '[DrawioEditor] Upload error:', error ); // eslint-disable-line no-console
+	}
 };
 
 DrawioEditor.prototype.save = function ( datauri ) {
@@ -255,9 +301,7 @@ DrawioEditor.prototype.save = function ( datauri ) {
 	}
 
 	// convert base64 to uint8 array
-	let datastr = atob( parts[ 4 ] );
-	const expr = /"http:\/\/[^"]*?1999[^"]*?"/gmi;
-	datastr = datastr.replace( expr, '"http://www.w3.org/1999/xhtml"' );
+	const datastr = atob( parts[ 4 ] );
 	const data = new Uint8Array( datastr.length );
 	for ( let i = 0; i < datastr.length; i++ ) {
 		data[ i ] = datastr.charCodeAt( i );
@@ -284,8 +328,7 @@ DrawioEditor.prototype.saveCallback = function () {
 	this.sendMsgToIframe( {
 		action: 'export',
 		embedImages: true,
-		format: format,
-		scale: this.scale
+		format: format
 	} );
 
 	// TODO: prevent exit while saving
@@ -304,20 +347,55 @@ DrawioEditor.prototype.initCallback = function () {
 	this.loadImage();
 };
 
+function FullscreenDialog( $iFrame ) {
+	FullscreenDialog.super.call( this, {} );
+
+	this.$iFrame = $iFrame;
+	this.windowManager = new OO.ui.WindowManager();
+	$( document.body ).append( this.windowManager.$element );
+	this.windowManager.addWindows( [ this ] );
+}
+OO.inheritClass( FullscreenDialog, OO.ui.Dialog );
+
+FullscreenDialog.static.name = 'drawioFullscreenDialog';
+
+FullscreenDialog.prototype.getSize = function () {
+	return 'full';
+};
+
+FullscreenDialog.prototype.initialize = function () {
+	FullscreenDialog.super.prototype.initialize.apply( this, arguments );
+
+	this.content = new OO.ui.PanelLayout( {
+		padded: false,
+		expanded: true
+	} );
+	this.$body.append( this.content.$element );
+};
+
+FullscreenDialog.prototype.show = function () {
+	this.windowManager.openWindow( this );
+	this.content.$element.append( this.$iFrame );
+};
+
+FullscreenDialog.prototype.close = function () {
+	this.windowManager.closeWindow( this );
+};
+
 var editor; // eslint-disable-line no-var
 
-window.editDrawio = function ( id, filename, type, updateHeight, updateWidth, updateMaxWidth, baseUrl, latestIsApproved, imageURL ) {
+window.editDrawio = function ( id, filename, editMode, type, updateHeight, updateWidth, updateMaxWidth, baseUrl, latestIsApproved, imageURL ) {
 	if ( !editor ) {
 		window.drawioEditorBaseUrl = baseUrl;
-		editor = new DrawioEditor( id, filename, type, updateHeight, updateWidth, updateMaxWidth, baseUrl, latestIsApproved, imageURL );
+		editor = new DrawioEditor( id, filename, editMode, type, updateHeight, updateWidth, updateMaxWidth, baseUrl, latestIsApproved, imageURL );
 	} else {
 		alert( 'Only one DrawioEditor can be open at the same time!' );
 	}
 };
 
-function drawioHandleMessage( e ) {
+async function drawioHandleMessage( e ) {
 	// we only act on event coming from "baseUrl" iframes
-	if ( !window.drawioEditorBaseUrl || window.drawioEditorBaseUrl.indexOf( e.origin ) !== 0 ) {
+	if ( !window?.drawioEditorBaseUrl?.startsWith( e.origin ) ) {
 		return;
 	}
 
@@ -328,6 +406,10 @@ function drawioHandleMessage( e ) {
 	const evdata = JSON.parse( e.data );
 
 	switch ( evdata.event ) {
+		case 'configure':
+			await configureCallback( e );
+			break;
+
 		case 'init':
 			editor.initCallback();
 			break;
@@ -353,6 +435,47 @@ function drawioHandleMessage( e ) {
 	}
 }
 
+async function configureCallback( e ) {
+	try {
+		const response = await fetch(
+			mw.util.wikiScript() + '?' + new URLSearchParams( {
+				action: 'raw',
+				title: 'MediaWiki:DrawioEditorConfig.json',
+				ctype: 'application/json'
+			} )
+		);
+
+		if ( !response.ok ) {
+			throw new Error( `HTTP error ${ response.status }` );
+		}
+
+		let config = {
+			defaultAdaptiveColors: 'none'
+		};
+		const contentType = response.headers.get( 'Content-Type' );
+		const text = await response.text();
+
+		if ( !text.trim() ) {
+			console.warn( '[DrawioEditor] Config page is empty. Using default config.' ); // eslint-disable-line no-console
+		} else if ( contentType?.includes( 'application/json' ) || text.trim().startsWith( '{' ) ) {
+			try {
+				config = JSON.parse( text );
+			} catch ( parseErr ) {
+				console.warn( '[DrawioEditor] Failed to parse JSON in config. Using default config.', parseErr ); // eslint-disable-line no-console
+			}
+		} else {
+			console.warn( '[DrawioEditor] Config content not JSON-like. Using default config.' ); // eslint-disable-line no-console
+		}
+
+		e.source.postMessage( JSON.stringify( {
+			action: 'configure',
+			config
+		} ), e.origin );
+	} catch ( err ) {
+		console.error( '[DrawioEditor] Configure load failed:', err ); // eslint-disable-line no-console
+	}
+}
+
 window.addEventListener( 'message', drawioHandleMessage );
 
 $( document ).on( 'click', '.drawioeditor-edit', function () {
@@ -360,6 +483,7 @@ $( document ).on( 'click', '.drawioeditor-edit', function () {
 	editDrawio( // eslint-disable-line no-undef
 		data.targetId,
 		data.imgName,
+		data.editMode,
 		data.type,
 		data.height,
 		data.width,

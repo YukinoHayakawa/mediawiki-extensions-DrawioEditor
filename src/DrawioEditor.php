@@ -11,6 +11,7 @@ use MediaWiki\Extension\DrawioEditor\MXDocumentExtractor\PNG;
 use MediaWiki\Extension\DrawioEditor\MXDocumentExtractor\SVG;
 use MediaWiki\Html\Html;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Message\Message;
 use MediaWiki\Parser\Parser;
 use MediaWiki\Parser\PPFrame;
 use MediaWiki\Title\Title;
@@ -91,30 +92,25 @@ class DrawioEditor {
 		/* disable caching before any output is generated */
 		$parser->getOutput()->updateCacheExpiry( 0 );
 
-		$opt_type = array_key_exists( 'type', $opts )
-			? $opts[ 'type' ]
-			: $this->config->get( 'DrawioEditorImageType' );
-		$opt_height = array_key_exists( 'height', $opts ) ? $opts[ 'height' ] : 'auto';
-		$opt_width = array_key_exists( 'width', $opts ) ? $opts[ 'width' ] : '100%';
-		$opt_max_width = array_key_exists( 'max-width', $opts ) ? $opts[ 'max-width' ] : false;
-		$opt_alt = array_key_exists( 'alt', $opts ) ? $opts[ 'alt' ] : false;
-
-		$scale = isset( $opts[ 'scale' ] ) ? $opts[ 'scale' ] : 1;
-		// Prevent 0 and -1, default to 1
-		if ( $scale == 0 || $scale == -1 ) {
-			$scale = 1;
-		}
-		// Mapping for negatives: -2 → 0.9, -5 → 0.5, -10 → 0.1
-		if ( $scale < 0 ) {
-			$scale = 1 + ( ( $scale + 1 ) / 10 );
-		}
-		$parser->getOutput()->setJsConfigVar( 'drawioscale', $scale );
+		$opt_type = $opts[ 'type' ] ?? $this->config->get( 'DrawioEditorImageType' );
+		$opt_height = $opts[ 'height' ] ?? 'auto';
+		$opt_width = $opts[ 'width' ] ?? '100%';
+		$opt_max_width = $opts[ 'max-width' ] ?? false;
+		$opt_alt = $opts[ 'alt' ] ?? false;
+		$alignment = $opts[ 'alignment' ] ?? 'center';
+		$edit_mode = $opts[ 'editmode' ] ?? $this->config->get( 'DrawioEditorDefaultEditmode' );
 
 		/* process input */
 		if ( $name == null || !strlen( $name ) ) {
 			return $this->errorMessage( 'Usage Error' );
 		}
-		if ( !in_array( $opt_type, [ 'svg', 'png' ] ) ) {
+		$opt_type = strtolower( $opt_type );
+		if ( $opt_type === 'svg' ) {
+			// allow fallback to png
+			$tryTypes = [ 'svg', 'png' ];
+		} elseif ( $opt_type === 'png' ) {
+			$tryTypes = [ 'png' ];
+		} else {
 			return $this->errorMessage( 'Invalid type' );
 		}
 
@@ -152,33 +148,49 @@ class DrawioEditor {
 		$id = mt_rand();
 
 		/* prepare image information */
-		$img_name = $name . ".drawio." . $opt_type;
 		$repo = $this->services->getRepoGroup();
-		$img = $repo->findFile( $img_name );
+		$img = null;
+		$img_name = "$name.$opt_type";
 
-		if ( !$img ) {
-			// fallback
-			$img_name = $name . '.' . $opt_type;
-			$img = $repo->findFile( $img_name );
+		foreach ( $tryTypes as $ext ) {
+			foreach ( [ "$name.drawio.$ext", "$name.$ext" ] as $imgNameTry ) {
+				$img = $repo->findFile( $imgNameTry );
+				if ( $img ) {
+					$opt_type = $ext;
+					$img_name = $imgNameTry;
+					break 2;
+				}
+			}
 		}
 
 		$noApproved = false;
 		$latest_is_approved = true;
+
+		$img_url_ts = '';
+		$img_desc_url = '';
+		$img_height = 0;
+		$img_width = 0;
+
 		if ( $img ) {
-			$img_url_ts = null;
 			$displayImage = $img;
 			$hookRunner = $this->services->getHookContainer();
-			$hookRunner->run( 'DrawioGetFile', [ &$img, &$latest_is_approved, $parser->getUserIdentity(),
-			&$noApproved, &$displayImage ] );
+			$hookRunner->run( 'DrawioGetFile', [
+				&$img,
+				&$latest_is_approved,
+				$parser->getUserIdentity(),
+				&$noApproved,
+				&$displayImage
+			] );
+
 			$img_url_ts = $displayImage->getUrl();
-			$img_desc_url = $img->getDescriptionUrl();
-			$img_height = $img->getHeight() . 'px';
-			$img_width = $img->getWidth() . 'px';
-		} else {
-			$img_url_ts = '';
-			$img_desc_url = '';
-			$img_height = 0;
-			$img_width = 0;
+			$ts = $displayImage->getTimestamp();
+			if ( $ts ) {
+				$img_url_ts .= "?t=$ts";
+			}
+
+			$img_desc_url = $displayImage->getDescriptionUrl();
+			$img_height = $displayImage->getHeight() . 'px';
+			$img_width = $displayImage->getWidth() . 'px';
 		}
 
 		$css_img_height = $opt_height === 'chart' ? $img_height : $opt_height;
@@ -192,13 +204,14 @@ class DrawioEditor {
 			return $this->errorMessage( 'Invalid base url' );
 		}
 
-		/* prepare edit href */
-		$editLabel = wfMessage( 'edit' )->escaped();
+		// Edit link
+		$editLabel = Message::newFromKey( 'edit' )->text();
 		$attribs = [
 			'class' => 'drawioeditor-edit',
 			'title' => $editLabel,
 			'data-target-id' => $id,
 			'data-img-name' => $img_name,
+			'data-edit-mode' => $edit_mode,
 			'data-type' => $opt_type,
 			'data-height' => $opt_height === 'chart' ? 'true' : 'false',
 			'data-width' => $opt_width === 'chart' ? 'true' : 'false',
@@ -207,7 +220,11 @@ class DrawioEditor {
 			'data-latest-is-approved' => $latest_is_approved ? 'true' : 'false',
 			'data-img-url' => $img ? $img->getUrl() : ""
 		];
-		$edit_ahref = Html::element( 'a', $attribs, $editLabel );
+		$editLink = Html::element( 'a', $attribs, $editLabel );
+
+		// Details link
+		$detailsLabel = Message::newFromKey( 'drawioeditor-details' )->text();
+		$detailsLink = Html::element( 'a', [ 'href' => $img_desc_url ], $detailsLabel );
 
 		/* output begin */
 		$output = Html::openElement( 'div' );
@@ -219,20 +236,20 @@ class DrawioEditor {
 		if ( $noApproved ) {
 			$output .= Html::element( 'p',
 				[ 'class' => 'successbox' ],
-				wfMessage( "drawioeditor-noapproved", $name )->escaped()
+				Message::newFromKey( 'drawioeditor-noapproved', $name )->text()
 			);
 
 			if ( $userHasRight ) {
 				$output .= ' ' . Html::element( 'a',
 					[ 'href' => $img_desc_url ],
-					wfMessage( "drawioeditor-approve-link" )->escaped()
+					Message::newFromKey( 'drawioeditor-approve-link' )->text()
 				);
 			}
 
 			global $egApprovedRevsBlankFileIfUnapproved;
 			if ( $egApprovedRevsBlankFileIfUnapproved ) {
 				$img = null;
-				$edit_ahref = '';
+				$editLink = '';
 			}
 		} else {
 			if ( $img ) {
@@ -240,17 +257,25 @@ class DrawioEditor {
 					$output .= Html::element( 'p', [
 						'class' => 'successbox',
 						'id' => 'approved-displaywarning'
-					], wfMessage( "drawioeditor-approved-displaywarning" )->escaped()
+					], Message::newFromKey( 'drawioeditor-approved-displaywarning' )->text()
 					);
 				}
 				if ( $userHasRight ) {
 					$output .= ' ' . Html::element( 'a',
 						[ 'href' => $img_desc_url ],
-						wfMessage( "drawioeditor-changeapprove-link" )->escaped()
+						Message::newFromKey( 'drawioeditor-changeapprove-link' )->text()
 					);
 				}
 			}
 		}
+
+		// Build links section
+		$links = [];
+		if ( $editLink ) {
+			$links[] = $editLink;
+		}
+		$links[] = $detailsLink;
+		$linksSection = implode( ' | ', $links );
 
 		/* div around the image */
 		$output .= Html::openElement( 'div', [ 'id' => "drawio-img-box-$id" ] );
@@ -266,7 +291,7 @@ class DrawioEditor {
 				[ 'class' => 'mw-editsection-bracket' ],
 				'['
 			);
-			$output .= $edit_ahref;
+			$output .= $linksSection;
 			$output .= Html::element( 'span',
 				[ 'class' => 'mw-editsection-bracket' ],
 				']'
@@ -284,13 +309,20 @@ class DrawioEditor {
 
 		$imgAttribs = [
 			'id' => "drawio-img-$id",
-			'src' => $img_url_ts,
-			'title' => wfMessage( 'drawio: ' . $dispname )->escaped(),
-			'alt' => $alt,
+			'title' => "drawio: $dispname",
 			'style' => $img_style
 		];
 
-		if ( $img ) {
+		if ( $opt_type === 'svg' ) {
+			$imgAttribs['data'] = $img_url_ts;
+			$imgAttribs['type'] = 'image/svg+xml';
+			$imgAttribs['aria-label'] = $alt;
+		} elseif ( $opt_type === 'png' ) {
+			$imgAttribs['src'] = $img_url_ts;
+			$imgAttribs['alt'] = $alt;
+		}
+
+		if ( $img && $opt_type === 'png' ) {
 			$mxDocumentExtractor = $this->getMXDocumentExtractor( $opt_type, $img->getRepo() );
 			$mxDocument = $mxDocumentExtractor->extractMXDocument( $img );
 			$imageMapGenerator = new ImageMapGenerator();
@@ -302,15 +334,19 @@ class DrawioEditor {
 		}
 
 		/* Generate image HTML */
-		$img_html = Html::openElement( 'a', [
-			'id' => "drawio-img-href-$id",
-			'href' => $img_desc_url
-		] );
-		$img_html .= Html::element( 'img', $imgAttribs );
-		if ( isset( $imageMap ) ) {
-			$img_html .= $imageMap;
+		if ( $opt_type === 'svg' ) {
+			$img_html = Html::element( 'object', $imgAttribs );
+		} elseif ( $opt_type === 'png' ) {
+			$img_html = Html::openElement( 'a', [
+				'id' => "drawio-img-href-$id",
+				'href' => $img_desc_url
+			] );
+			$img_html .= Html::element( 'img', $imgAttribs );
+			if ( isset( $imageMap ) ) {
+				$img_html .= $imageMap;
+			}
+			$img_html .= Html::closeElement( 'a' );
 		}
-		$img_html .= Html::closeElement( 'a' );
 
 		/* output image and optionally a placeholder if the image does not exist yet */
 		if ( !$img && !$noApproved ) {
@@ -322,7 +358,10 @@ class DrawioEditor {
 		} else {
 			// the image or object element must be there in any case
 			// (it's hidden as long as there is no content.)
-			$output .= $img_html;
+			$output .= Html::rawElement( 'div',
+				[ 'class' => "drawio-img-container drawio-align-$alignment" ],
+				$img_html
+			);
 		}
 
 		$output .= Html::closeElement( 'div' );
